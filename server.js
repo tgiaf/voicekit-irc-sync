@@ -166,19 +166,27 @@ if (t === 'admin:invite' && isAdmin) {
   const expiry = now() + INVITE_TTL_MS;
   state.rooms[room].pendingInvites.set(target, expiry);
 
-  // admin’e bilgi ver (kendisine onay mesajı)
+  // admin’e bilgi ver
   send(ws,'invited',{ nick: target, expiresAt: expiry });
 
-  // 🔽 BURASI YENİ EKLENEN KISIM
-  // hedef kullanıcıya “invited” bildirimi gönder (katıl/reddet popup’ı için)
+  // 1) Odaya girmiş ÜYELER arasında hedef nick varsa ona bildir
   for (const [cid, m] of state.rooms[room].members.entries()) {
     if (m.nick === target) {
-      send(m.ws, 'invited', { from: meta.nick, ttl: INVITE_TTL_MS });
+      send(m.ws, 'invited', { from: meta.nick, ttl: INVITE_TTL_MS, room });
+    }
+  }
+
+  // 2) Pasif (HELLO göndermiş) istemciler arasında da ara ve bildir
+  for (const [cid, c] of state.clients.entries()) {
+    // c.mode === 'passive' olanlar 'join' etmemiştir ama ws açıktır
+    if (c.nick === target && c.mode === 'passive') {
+      send(c.ws, 'invited', { from: meta.nick, ttl: INVITE_TTL_MS, room });
     }
   }
 
   return;
 }
+
 
 
     // bekleyen daveti kaldır + içerdeyse at
@@ -227,4 +235,5 @@ if (t === 'admin:invite' && isAdmin) {
 });
 
 server.listen(PORT, () => console.log('listening on', PORT));
+
 

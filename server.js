@@ -160,14 +160,26 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // admin daveti: tek kullanımlık + süreli (1 dk)
-    if (t === 'admin:invite' && isAdmin) {
-      const target = sanitizeNick(msg.nick);
-      const expiry = now() + INVITE_TTL_MS;
-      state.rooms[room].pendingInvites.set(target, expiry);
-      send(ws,'invited',{ nick: target, expiresAt: expiry });
-      return;
+   // admin daveti: tek kullanımlık + süreli (1 dk)
+if (t === 'admin:invite' && isAdmin) {
+  const target = sanitizeNick(msg.nick);
+  const expiry = now() + INVITE_TTL_MS;
+  state.rooms[room].pendingInvites.set(target, expiry);
+
+  // admin’e bilgi ver (kendisine onay mesajı)
+  send(ws,'invited',{ nick: target, expiresAt: expiry });
+
+  // 🔽 BURASI YENİ EKLENEN KISIM
+  // hedef kullanıcıya “invited” bildirimi gönder (katıl/reddet popup’ı için)
+  for (const [cid, m] of state.rooms[room].members.entries()) {
+    if (m.nick === target) {
+      send(m.ws, 'invited', { from: meta.nick, ttl: INVITE_TTL_MS });
     }
+  }
+
+  return;
+}
+
 
     // bekleyen daveti kaldır + içerdeyse at
     if (t === 'admin:revoke' && isAdmin) {
@@ -215,3 +227,4 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => console.log('listening on', PORT));
+

@@ -19,20 +19,16 @@ const INVITE_TTL_MS = Number(process.env.INVITE_TTL_MS || 60000); // 1 dk
 const EGGDROP_SECRET = process.env.EGGDROP_SECRET || '';
 
 function okOrigin(origin){
-  // Origin header yoksa kabul et (örn: bazı proxy/uyku sonrası uyanma durumları)
-  if (!origin) return true;
-  if (ALLOWED_ORIGINS.includes('*')) return true;
+  if (!origin) return true; // bazı istemciler Origin göndermez
   try {
-    // sadece köken karşılaştır (path yok)
     const o = new URL(origin);
-    return ALLOWED_ORIGINS.some(a => {
+    // SADECE bu iki kökeni kabul et
+    const allow = ["https://www.fisilti.org","https://fisilti.org"];
+    return allow.some(a => {
       const A = new URL(a);
       return A.protocol === o.protocol && A.host === o.host;
     });
-  } catch {
-    // Origin parse edilemezse son çare reddetme
-    return false;
-  }
+  } catch { return false; }
 }
 
 const now = () => Date.now();
@@ -314,4 +310,5 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => console.log('listening on', PORT));
+
 

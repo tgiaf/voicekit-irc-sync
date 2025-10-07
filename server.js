@@ -108,14 +108,49 @@ wss.on('connection', (ws) => {
     const t = msg.type;
 
     if (t === 'join') {
-      const nick = sanitizeNick(msg.nick);
-      const channel = String(msg.channel || '');
-      const room = String(msg.room || ROOM_KEYS[0]);
+  const nick = sanitizeNick(msg.nick);
+  const channel = String(msg.channel || '');
+  const room = String(msg.room || ROOM_KEYS[0]);
 
-      if (!CHANNEL_WHITELIST.has(channel)) { send(ws, 'error', { error:'channel-not-allowed' }); return; }
-      if (!ROOM_KEYS.includes(room)) { send(ws, 'error', { error:'invalid-room' }); return; }
+  if (!CHANNEL_WHITELIST.has(channel)) { send(ws, 'error', { error: 'channel-not-allowed' }); return; }
+  if (!ROOM_KEYS.includes(room)) { send(ws, 'error', { error: 'invalid-room' }); return; }
 
-      const isAdmin = ADMIN_NICKS.has(nick);
+  const isAdmin = ADMIN_NICKS.has(nick.toLowerCase());
+
+  // Konuşma izni (speaker):
+  // - admin ise: true
+  // - admin değilse: yalnızca geçerli daveti varsa true, yoksa false (dinleyici)
+  let isSpeaker = isAdmin;
+  if (!isAdmin) {
+    const expiry = state.rooms[room].pendingInvites.get(nick);
+    if (expiry && expiry > now()) {
+      isSpeaker = true;
+      state.rooms[room].pendingInvites.delete(nick); // daveti tüket
+    } else {
+      isSpeaker = false; // davetsiz -> dinleyici
+    }
+  }
+
+  // client meta & oda kaydı
+  const metaObj = { ws, nick, channel, room, isAdmin };
+  state.clients.set(clientId, metaObj);
+  state.rooms[room].members.set(clientId, { ws, nick, isAdmin, isSpeaker });
+
+  // Katılana yanıt
+  send(ws, 'joined', {
+    clientId, room,
+    you: { nick, isAdmin, isSpeaker },
+    visibleToAll: state.rooms[room].visibleToAll,
+    members: [...state.rooms[room].members.values()].map(m => ({
+      nick: m.nick, isAdmin: m.isAdmin, isSpeaker: m.isSpeaker
+    }))
+  });
+
+  // Diğerlerine duyur
+  broadcastRoom(room, { type: 'peer-join', nick, isSpeaker }, clientId);
+  return;
+}
+
 
       // admin dışı kullanıcı: son 1 dk içinde davet şart (tek kullanımlık)
       if (!isAdmin) {
@@ -166,19 +201,23 @@ if (t === 'admin:invite' && isAdmin) {
   const expiry = now() + INVITE_TTL_MS;
   state.rooms[room].pendingInvites.set(target, expiry);
 
-  // admin’e bilgi ver
-  send(ws,'invited',{ nick: target, expiresAt: expiry });
+  // admin’e bilgi (echo)
+  send(ws, 'invited', { nick: target, expiresAt: expiry });
 
-  // 1) Odaya girmiş ÜYELER arasında hedef nick varsa ona bildir
+  // 1) Oda içindeki hedefi anında konuşmacı yap (dinleyiciyse terfi)
   for (const [cid, m] of state.rooms[room].members.entries()) {
     if (m.nick === target) {
-      send(m.ws, 'invited', { from: meta.nick, ttl: INVITE_TTL_MS, room });
+      m.isSpeaker = true;
+      send(m.ws, 'speakerGranted', { room, ttl: INVITE_TTL_MS });
+      break;
     }
   }
 
-  // 2) Pasif (HELLO göndermiş) istemciler arasında da ara ve bildir
+  // 2) Pasif/aktif bağlı hedefe davet popup’ı gönder
+  for (const [cid, m] of state.rooms[room].members.entries()) {
+    if (m.nick === target) send(m.ws, 'invited', { from: meta.nick, ttl: INVITE_TTL_MS, room });
+  }
   for (const [cid, c] of state.clients.entries()) {
-    // c.mode === 'passive' olanlar 'join' etmemiştir ama ws açıktır
     if (c.nick === target && c.mode === 'passive') {
       send(c.ws, 'invited', { from: meta.nick, ttl: INVITE_TTL_MS, room });
     }
@@ -186,6 +225,7 @@ if (t === 'admin:invite' && isAdmin) {
 
   return;
 }
+
 
 
 
@@ -235,5 +275,6 @@ if (t === 'admin:invite' && isAdmin) {
 });
 
 server.listen(PORT, () => console.log('listening on', PORT));
+
 
 

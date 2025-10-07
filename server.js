@@ -107,6 +107,11 @@ if (req.method === 'POST' && req.url === '/webhook/eggdrop') {
       const calc = crypto.createHmac('sha256', EGGDROP_SECRET)
         .update(body)
         .digest('hex');
+      try {
+  const bodySha = require('crypto').createHash('sha256').update(body).digest('hex');
+  console.log('Body SHA-256:', bodySha, 'len=', Buffer.byteLength(body));
+} catch {}
+
 
       // ✅ Gelişmiş Teşhis Logları (Sorunu bulmak için eklendi)
       console.log('--- Eggdrop Webhook Request ---');
@@ -414,5 +419,6 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => console.log('listening on', PORT));
+
 
 

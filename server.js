@@ -39,6 +39,8 @@ function json(res, code, obj) {
 function sanitizeNick(n) {
   return String(n || '').replace(/[^A-Za-z0-9_\-\[\]{}^`|]/g,'').slice(0,24);
 }
+function normNick(n){ return sanitizeNick(n).toLowerCase(); }
+
 function safeEqualHex(a,b){
   try{
     const A = Buffer.from(a,'hex');
@@ -99,54 +101,58 @@ const server = http.createServer((req, res) => {
         }
 
         if (action === 'invite') {
-          const expiry = now() + INVITE_TTL_MS;
-          state.rooms[room].pendingInvites.set(target, expiry);
+  const byNorm     = normNick(by);
+  const targetNorm = normNick(target);
+  const expiry     = now() + INVITE_TTL_MS;
 
-          // Oda içindeyse anında konuşmacı yap + bildir
-          for (const [cid, m] of state.rooms[room].members.entries()) {
-            if (m.nick === target) {
-              m.isSpeaker = true;
-              send(m.ws, 'speakerGranted', { room, ttl: INVITE_TTL_MS });
-              send(m.ws, 'invited', { from: by, ttl: INVITE_TTL_MS, room });
-            }
-          }
-          // Pasif/diğer WS bağlantılarına popup
-          for (const [cid, c] of state.clients.entries()) {
-            if (c.nick === target) {
-              send(c.ws, 'invited', { from: by, ttl: INVITE_TTL_MS, room });
-            }
-          }
-          json(res, 200, { ok:true }); return;
-        }
+  state.rooms[room].pendingInvites.set(targetNorm, expiry);
 
-        if (action === 'revoke') {
-          state.rooms[room].pendingInvites.delete(target);
-          // İçerideyse konuşma iznini kaldır (admin değilse)
-          for (const [cid, m] of state.rooms[room].members.entries()) {
-            if (m.nick === target && !m.isAdmin) {
-              m.isSpeaker = false;
-              send(m.ws, 'speakerRevoked', { room });
-            }
-          }
-          json(res, 200, { ok:true }); return;
-        }
+  // Oda içindeyse konuşmacıya terfi + popup
+  for (const [cid, m] of state.rooms[room].members.entries()) {
+    if (m.norm === targetNorm) {
+      m.isSpeaker = true;
+      send(m.ws, 'speakerGranted', { room, ttl: INVITE_TTL_MS });
+      send(m.ws, 'invited', { from: by, ttl: INVITE_TTL_MS, room });
+    }
+  }
+  // Pasif WS bağlantısına popup
+  for (const [cid, c] of state.clients.entries()) {
+    if ((c.norm || normNick(c.nick)) === targetNorm) {
+      send(c.ws, 'invited', { from: by, ttl: INVITE_TTL_MS, room });
+    }
+  }
+  console.log(`[INVITE] ${by} -> ${target} (${room})`);
+  json(res, 200, { ok:true }); return;
+}
 
-        if (action === 'kick') {
-          for (const [cid, m] of state.rooms[room].members.entries()) {
-            if (m.nick === target) {
-              send(m.ws, 'kicked', { reason: `Eggdrop by ${by}` });
-              state.rooms[room].members.delete(cid);
-              try { m.ws.close(4000, 'kicked'); } catch {}
-              broadcastRoom(room, { type:'peer-leave', nick: target });
-            }
-          }
-          json(res, 200, { ok:true }); return;
-        }
+if (action === 'revoke') {
+  const targetNorm = normNick(target);
+  state.rooms[room].pendingInvites.delete(targetNorm);
+  for (const [cid, m] of state.rooms[room].members.entries()) {
+    if (m.norm === targetNorm && !m.isAdmin) {
+      m.isSpeaker = false;
+      send(m.ws, 'speakerRevoked', { room });
+    }
+  }
+  console.log(`[REVOKE] ${by} -> ${target} (${room})`);
+  json(res, 200, { ok:true }); return;
+}
 
-        json(res, 400, { ok:false, error:'unknown-action' });
-      } catch(e) {
-        json(res, 400, { ok:false, error:'bad-json' });
-      }
+if (action === 'kick') {
+  const targetNorm = normNick(target);
+  let kicked = false;
+  for (const [cid, m] of state.rooms[room].members.entries()) {
+    if (m.norm === targetNorm) {
+      send(m.ws, 'kicked', { reason: `Eggdrop by ${by}` });
+      state.rooms[room].members.delete(cid);
+      try { m.ws.close(4000, 'kicked'); } catch {}
+      broadcastRoom(room, { type:'peer-leave', nick: m.nick });
+      kicked = true;
+    }
+  }
+  console.log(`[KICK] ${by} -> ${target} (${room}) ${kicked?'OK':'NOT-IN-ROOM'}`);
+  json(res, 200, { ok:true }); return;
+}
     });
     return;
   }
@@ -264,58 +270,61 @@ wss.on('connection', (ws) => {
 
     // Pasif tanıtım (panel açmadan WS'e bağlananlar davet popup'ı alabilsin)
     if (t === 'hello') {
-      const nick = sanitizeNick(msg.nick);
-      const channel = String(msg.channel || '').toLowerCase();
-      state.clients.set(clientId, { ws, nick, channel, room: null, isAdmin: ADMIN_NICKS.has(nick.toLowerCase()), mode:'passive' });
+  const nickRaw  = sanitizeNick(msg.nick);
+  const nickNorm = normNick(nickRaw);
+  const channel  = String(msg.channel || '').toLowerCase();
 
-      // Bu kullanıcı için aktif bir davet varsa hemen bildir
-      const expiry = state.rooms[SINGLE_ROOM].pendingInvites.get(nick);
-      if (expiry && expiry > now()) {
-        send(ws, 'invited', { from: 'Yönetici', ttl: (expiry - now()), room: SINGLE_ROOM });
-      }
-      return;
-    }
+  state.clients.set(clientId, {
+    ws, nick: nickRaw, norm: nickNorm, channel, room: null,
+    isAdmin: ADMIN_NICKS.has(nickNorm), mode:'passive'
+  });
+
+  const exp = state.rooms[SINGLE_ROOM].pendingInvites.get(nickNorm);
+  if (exp && exp > now()) {
+    send(ws, 'invited', { from: 'Yönetici', ttl: (exp - now()), room: SINGLE_ROOM });
+  }
+  return;
+}
+
 
     // Odaya katıl (herkes dinleyici olabilir; konuşma = admin/davet)
     if (t === 'join') {
-      const nick    = sanitizeNick(msg.nick);
-      const channel = String(msg.channel || '').toLowerCase();
-      const room    = SINGLE_ROOM;
+  const nickRaw  = sanitizeNick(msg.nick);
+  const nickNorm = normNick(nickRaw);
+  const channel  = String(msg.channel || '').toLowerCase();
+  const room     = SINGLE_ROOM;
 
-      if (!CHANNEL_WHITELIST.has(channel)) { send(ws, 'error', { error: 'channel-not-allowed' }); return; }
+  if (!CHANNEL_WHITELIST.has(channel)) { send(ws, 'error', { error: 'channel-not-allowed' }); return; }
 
-      const isAdmin = ADMIN_NICKS.has(nick.toLowerCase());
+  const isAdmin  = ADMIN_NICKS.has(nickNorm);
 
-      // konuşma izni: admin -> true; davetli -> true; aksi -> false (dinleyici)
-      let isSpeaker = isAdmin;
-      if (!isAdmin) {
-        const expiry = state.rooms[room].pendingInvites.get(nick);
-        if (expiry && expiry > now()) {
-          isSpeaker = true;
-          state.rooms[room].pendingInvites.delete(nick); // daveti tüket
-        } else {
-          isSpeaker = false; // dinleyici
-        }
-      }
+  // konuşma izni: admin -> true; davetli -> true; aksi -> false
+  let isSpeaker = isAdmin;
+  if (!isAdmin) {
+    const expiry = state.rooms[room].pendingInvites.get(nickNorm);
+    if (expiry && expiry > now()) {
+      isSpeaker = true;
+      state.rooms[room].pendingInvites.delete(nickNorm);
+    } else { isSpeaker = false; }
+  }
 
-      meta = { nick, channel, room, isAdmin };
-      state.clients.set(clientId, { ws, ...meta });
-      state.rooms[room].members.set(clientId, { ws, nick, isAdmin, isSpeaker });
+  const metaObj = { nick: nickRaw, norm: nickNorm, channel, room, isAdmin };
+  state.clients.set(clientId, { ws, ...metaObj });
+  state.rooms[room].members.set(clientId, { ws, nick: nickRaw, norm: nickNorm, isAdmin, isSpeaker });
 
-      // Katılana yanıt
-      send(ws, 'joined', {
-        clientId, room,
-        you: { nick, isAdmin, isSpeaker },
-        visibleToAll: state.rooms[room].visibleToAll,
-        members: [...state.rooms[room].members.values()].map(m => ({
-          nick: m.nick, isAdmin: m.isAdmin, isSpeaker: m.isSpeaker
-        }))
-      });
+  send(ws, 'joined', {
+    clientId, room,
+    you: { nick: nickRaw, isAdmin, isSpeaker },
+    visibleToAll: state.rooms[room].visibleToAll,
+    members: [...state.rooms[room].members.values()].map(m => ({
+      nick: m.nick, isAdmin: m.isAdmin, isSpeaker: m.isSpeaker
+    }))
+  });
 
-      // Diğerlerine duyur
-      broadcastRoom(room, { type: 'peer-join', nick, isSpeaker }, clientId);
-      return;
-    }
+  broadcastRoom(room, { type:'peer-join', nick: nickRaw, isSpeaker }, clientId);
+  return;
+}
+
 
     // meta yoksa diğer mesajları alma
     if (!meta) return;
@@ -323,13 +332,13 @@ wss.on('connection', (ws) => {
 
     if (t === 'signal') {
   const { to, data } = msg;
-  // TEŞHİS LOGU:
-  try { console.log('[SIGNAL]', meta.nick, '→', to, data?.sdp?.type || (data?.candidate?'candidate':'')); } catch {}
+  const toNorm = normNick(to);
   for (const [cid, m] of state.rooms[room].members.entries()) {
-    if (m.nick === to) { send(m.ws, 'signal', { from: meta.nick, data }); break; }
+    if (m.norm === toNorm) { send(m.ws, 'signal', { from: meta.nick, data }); break; }
   }
   return;
 }
+
 
 
     // Liste görünürlüğü (istersen açık bırak)
@@ -358,6 +367,7 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => console.log('listening on', PORT));
+
 
 
 

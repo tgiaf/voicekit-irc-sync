@@ -96,7 +96,9 @@ const server = http.createServer((req, res) => {
   }
 
   // === Eggdrop -> Voice webhook (invite / revoke / kick) ===
-  if (req.method === 'POST' && req.url === '/webhook/eggdrop') {
+  // server.js dosyanızda bu bölümü aşağıdakiyle değiştirin
+// === Eggdrop -> Voice webhook (invite / revoke / kick) ===
+if (req.method === 'POST' && req.url === '/webhook/eggdrop') {
   let body = '';
   req.on('data', ch => body += ch);
   req.on('end', () => {
@@ -106,16 +108,22 @@ const server = http.createServer((req, res) => {
         .update(body)
         .digest('hex');
 
-      // ✅ Teşhis logları
-      if (!sigHdr) console.warn('[EGG] Missing X-Signature header');
-      if (sigHdr && sigHdr.length < 10) console.warn('[EGG] X-Signature çok kısa:', sigHdr);
+      // ✅ Gelişmiş Teşhis Logları (Sorunu bulmak için eklendi)
+      console.log('--- Eggdrop Webhook Request ---');
+      console.log('Received Signature (Bottan gelen):', sigHdr);
+      console.log('Calculated Signature (Sunucunun hesapladığı):', calc);
+      console.log('Kullanılan Secret Uzunluğu:', (EGGDROP_SECRET || '').length);
+      console.log('Gelen Ham Veri (Body):', body);
+      console.log('---------------------------------');
+
       if (!safeEqualHex(calc, sigHdr)) {
-        console.warn('[EGG] Signature mismatch');
+        console.error('[EGG] HATA: İMZALAR UYUŞMUYOR!');
         res.writeHead(401);
-        res.end('invalid signature');
+        res.end('invalid signature'); // Doğru hata mesajı
         return;
       }
 
+      // ... kodun geri kalanı buradan itibaren aynı ...
       const data = JSON.parse(body || '{}');
       const action = String(data.action || '');
       const byRaw = sanitizeNick(String(data.by || ''));
@@ -127,7 +135,9 @@ const server = http.createServer((req, res) => {
         json(res, 403, { ok: false, error: 'channel-not-allowed' });
         return;
       }
-
+      
+      // ... kodun geri kalanını olduğu gibi bırakın ...
+      
       const byNorm = normNick(byRaw);
       const tgtNorm = normNick(tgtRaw);
 
@@ -154,6 +164,7 @@ const server = http.createServer((req, res) => {
         return;
       }
 
+      // Diğer action'lar (revoke, kick) olduğu gibi kalabilir...
       if (action === 'revoke') {
         state.rooms[room].pendingInvites.delete(tgtNorm);
         for (const [cid, m] of state.rooms[room].members.entries()) {
@@ -403,4 +414,5 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => console.log('listening on', PORT));
+
 

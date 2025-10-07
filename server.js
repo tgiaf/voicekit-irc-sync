@@ -277,12 +277,15 @@ wss.on('connection', (ws) => {
     const { room, isAdmin } = meta;
 
     if (t === 'signal') {
-      const { to, data } = msg;
-      for (const [cid, m] of state.rooms[room].members.entries()) {
-        if (m.nick === to) { send(m.ws, 'signal', { from: meta.nick, data }); break; }
-      }
-      return;
-    }
+  const { to, data } = msg;
+  // TEŞHİS LOGU:
+  try { console.log('[SIGNAL]', meta.nick, '→', to, data?.sdp?.type || (data?.candidate?'candidate':'')); } catch {}
+  for (const [cid, m] of state.rooms[room].members.entries()) {
+    if (m.nick === to) { send(m.ws, 'signal', { from: meta.nick, data }); break; }
+  }
+  return;
+}
+
 
     // Liste görünürlüğü (istersen açık bırak)
     if (t === 'admin:setVisibleToAll' && isAdmin) {
@@ -310,5 +313,6 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => console.log('listening on', PORT));
+
 
 

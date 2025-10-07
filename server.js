@@ -185,6 +185,51 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
+  // IRC -> webhook: /irc-invite  (TOKEN ile basit davet)
+  if (req.method === 'POST' && req.url === '/irc-invite') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(body || '{}');
+        if (data.token !== SECRET_TOKEN) return json(res, 403, { ok: false, error: 'bad-token' });
+
+        const room = SINGLE_ROOM;
+        const from = sanitizeNick(String(data.from || '').trim());
+        const target = sanitizeNick(String(data.nick || '').trim());
+        if (!target || !from) return json(res, 400, { ok: false, error: 'missing-from-or-target' });
+
+        const r = state.rooms[room];
+        if (!r) return json(res, 404, { ok: false, error: 'no-room' });
+
+        // 1) Daveti pending listesine ekle (1 dakika geçerli)
+        const expiry = now() + INVITE_TTL_MS;
+        r.pendingInvites.set(target, expiry);
+
+        // 2) Oda içindeyse popup + konuşmacı terfisi
+        for (const [cid, m] of r.members.entries()) {
+          if (m.nick === target) {
+            m.isSpeaker = true;
+            send(m.ws, 'speakerGranted', { room, ttl: INVITE_TTL_MS });
+            send(m.ws, 'invited', { from, ttl: INVITE_TTL_MS, room });
+          }
+        }
+        // 3) Pasif bağlı ise popup
+        for (const [cid, c] of state.clients.entries()) {
+          if (c.nick === target) {
+            send(c.ws, 'invited', { from, ttl: INVITE_TTL_MS, room });
+          }
+        }
+
+        console.log(`[INVITE] ${from} -> ${target}`);
+        return json(res, { ok: true, invited: target });
+      } catch (e) {
+        console.error('invite parse fail', e);
+        return json(res, 500, { ok: false, error: 'bad-json' });
+      }
+    });
+    return;
+  }
 
   res.writeHead(404); res.end();
 });
@@ -313,6 +358,7 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => console.log('listening on', PORT));
+
 
 
 

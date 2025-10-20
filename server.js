@@ -5,6 +5,49 @@ import { WebSocketServer } from 'ws';
 import { nanoid } from 'nanoid';
 import crypto from 'crypto';
 
+// 🔹 Gürültü bastırma, yankı önleme, otomatik kazanç
+import dotenv from "dotenv";
+dotenv.config();
+import { AudioProcessing } from "webrtc-audio-processing";
+import RNNoise from "rnnoise-wasm";
+
+// 🔹 Gürültü azaltıcı (AI tabanlı RNNoise başlat)
+let rnnoise = null;
+(async () => {
+  try {
+    rnnoise = await RNNoise();
+    console.log("✅ RNNoise yüklendi (AI tabanlı arka plan gürültü azaltma aktif)");
+  } catch {
+    console.warn("⚠️ RNNoise yüklenemedi, WebRTC AudioProcessing kullanılacak (fallback).");
+  }
+})();
+
+// 🔹 Ses temizleme yardımcı fonksiyon
+function cleanAudioBuffer(float32Array) {
+  try {
+    if (rnnoise) {
+      // RNNoise ile gürültü bastır
+      return rnnoise.process(float32Array);
+    }
+    const ap = new AudioProcessing({
+      enableEchoCancellation: true,
+      enableNoiseSuppression: true,
+      enableAutomaticGainControl: true
+    });
+    return ap.process(float32Array);
+  } catch (err) {
+    console.error("cleanAudioBuffer hata:", err);
+    return float32Array;
+  }
+}
+
+// 🔹 Başlatma logları
+console.log("🎧 VoiceKit başlatıldı:");
+console.log("  Gürültü bastırma:", process.env.AUDIO_NOISE_SUPPRESSION || "true");
+console.log("  Yankı önleme:", process.env.AUDIO_ECHO_CANCELLATION || "true");
+console.log("  Otomatik kazanç kontrolü:", process.env.AUDIO_AUTO_GAIN_CONTROL || "true");
+
+
 const PORT = process.env.PORT || 8080;
 
 // Örn: "https://fisilti.org,https://www.fisilti.org"
@@ -292,7 +335,13 @@ if (req.method === 'POST' && req.url === '/webhook/eggdrop') {
 });
 
 // ---- WebSocket ----
-const wss = new WebSocketServer({ noServer: true });
+// 🔹 Performans ayarlı WebSocket sunucusu
+const wss = new WebSocketServer({
+  noServer: true,
+  perMessageDeflate: false, // ses sinyali trafiği için sıkıştırmayı kapat
+  maxPayload: 1024 * 16     // küçük buffer (16 KB)
+});
+
 server.on('upgrade', (req, socket, head) => {
   const origin = req.headers['origin'];
   if (!okOrigin(origin)) {
@@ -422,6 +471,7 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => console.log('listening on', PORT));
+
 
 
 

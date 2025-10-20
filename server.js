@@ -147,8 +147,11 @@ if (req.method === 'POST' && req.url === '/webhook/eggdrop') {
       const tgtNorm = normNick(tgtRaw);
 
       if (action === 'invite') {
-        const expiry = now() + INVITE_TTL_MS;
-        state.rooms[room].pendingInvites.set(tgtNorm, expiry);
+  // YENİ: O an bağlı olan tüm istemcilerin nick'lerini logla.
+  console.log('[DEBUG] Aktif istemciler:', [...state.clients.values()].map(c => c.nick));
+
+  const expiry = now() + INVITE_TTL_MS;
+  state.rooms[room].pendingInvites.set(tgtNorm, expiry);
 
         for (const [cid, m] of state.rooms[room].members.entries()) {
           if (m.norm === tgtNorm) {
@@ -419,6 +422,7 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => console.log('listening on', PORT));
+
 
 
 

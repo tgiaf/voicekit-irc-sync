@@ -78,6 +78,26 @@ function safeEqualHex(a, b) {
 }
 
 // ---- Oda durumu ----
+
+// Oda her zaman en az bir "seslichat" botu içersin
+function ensureSeslichatBot() {
+  const r = state.rooms[SINGLE_ROOM];
+  if (!r) return;
+  const already = [...r.members.values()].some(m => m.norm === ALLOWED_BOT);
+  if (!already) {
+    const fakeId = `bot-${ALLOWED_BOT}`;
+    r.members.set(fakeId, {
+      ws: null,
+      nick: ALLOWED_BOT,
+      norm: ALLOWED_BOT,
+      isAdmin: true,
+      isSpeaker: false,
+      isBot: true,
+    });
+    console.log(`[BOT] Seslichat bot added to room`);
+  }
+}
+
 const state = {
   rooms: {
     [SINGLE_ROOM]: {
@@ -88,6 +108,9 @@ const state = {
   },
   clients: new Map(),
 };
+
+// Başlangıçta odayı botla doldur
+ensureSeslichatBot();
 
 // Eski davetleri temizle (30 sn)
 setInterval(() => {
@@ -229,6 +252,7 @@ server.on('upgrade', (req, socket, head) => {
 
 function send(ws, type, payload = {}) {
   try {
+    if (!ws) return;
     ws.send(JSON.stringify({ type, ...payload }));
   } catch {}
 }
@@ -238,7 +262,7 @@ function broadcastRoom(roomKey, msgObj, exceptId = null) {
   if (!r) return;
   const s = JSON.stringify(msgObj);
   for (const [cid, m] of r.members.entries()) {
-    if (cid === exceptId) continue;
+    if (cid === exceptId || !m.ws) continue;
     try {
       m.ws.send(s);
     } catch {}
@@ -246,6 +270,9 @@ function broadcastRoom(roomKey, msgObj, exceptId = null) {
 }
 
 wss.on('connection', ws => {
+  // Odayı her bağlantıda kontrol et
+  ensureSeslichatBot();
+
   const clientId = nanoid(10);
   let meta = null;
 
@@ -354,7 +381,7 @@ wss.on('connection', ws => {
       const { to, data } = msg;
       const toNorm = normNick(to);
       for (const [cid, m] of state.rooms[room].members.entries()) {
-        if (m.norm === toNorm) {
+        if (m.norm === toNorm && m.ws) {
           send(m.ws, 'signal', { from: meta.nick, data });
           break;
         }
@@ -389,6 +416,8 @@ wss.on('connection', ws => {
         broadcastRoom(room, { type: 'peer-leave', nick });
       }
     }
+    // Eğer oda boşaldıysa botu yeniden ekle
+    ensureSeslichatBot();
   });
 });
 

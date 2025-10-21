@@ -355,11 +355,13 @@ wss.on('connection', ws => {
         room,
         you: { nick: nickRaw, isAdmin, isSpeaker },
         visibleToAll: state.rooms[room].visibleToAll,
-        members: [...state.rooms[room].members.values()].map(m => ({
-          nick: m.nick,
-          isAdmin: m.isAdmin,
-          isSpeaker: m.isSpeaker,
-        })),
+        members: [...state.rooms[room].members.values()]
+          .filter(m => !m.isBot) // <-- BU SATIRI EKLEYİN
+          .map(m => ({
+            nick: m.nick,
+            isAdmin: m.isAdmin,
+            isSpeaker: m.isSpeaker,
+          })),
       });
 
       broadcastRoom(room, { type: 'peer-join', nick: nickRaw, isSpeaker }, clientId);
@@ -424,3 +426,4 @@ wss.on('connection', ws => {
 server.listen(PORT, () =>
   console.log(`✅ Voice signaling server listening on port ${PORT}`)
 );
+

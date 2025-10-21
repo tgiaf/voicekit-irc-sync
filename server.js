@@ -1,4 +1,4 @@
-// server.js — Voice signaling (tek oda, dinleyici/konuşmacı, Eggdrop webhook)
+// server.js — Voice signaling (tek oda, konuşmacı zorunlu, Eggdrop webhook)
 // ENV: PORT, ALLOWED_ORIGINS, ADMIN_NICKS, CHANNEL_WHITELIST, SECRET_TOKEN, INVITE_TTL_MS, EGGDROP_SECRET
 import http from 'http';
 import { WebSocketServer } from 'ws';
@@ -31,7 +31,7 @@ const CHANNEL_WHITELIST = new Set(
 const SINGLE_ROOM   = 'roomA'; // tek oda
 const SECRET_TOKEN  = process.env.SECRET_TOKEN   || 'change-this-secret';
 const INVITE_TTL_MS = Number(process.env.INVITE_TTL_MS || 60_000); // 1 dk
-const EGGDROP_SECRET= process.env.EGGDROP_SECRET || '';
+const EGGDROP_SECRET= process.env.EGGDROP_SECRET || '5f7a2c7f3b2a9f0b0cd1d5e2a1b47b8fa7c2bd31f8f8479a6b3c2d1e0f9a7c5d'; // Eggdrop secret'ı ENV'den gelmezse Tcl'deki varsayılanı kullan
 
 function okOrigin(origin){
   if (!origin) return true; // bazı istemciler Origin yollamaz
@@ -70,12 +70,14 @@ function safeEqualHex(a, b){
 const state = {
   rooms: {
     [SINGLE_ROOM]: {
-      members: new Map(),       // clientId -> { ws, nick, norm, isAdmin, isSpeaker }
+      members: new Map(),       // clientId -> { ws, nick, norm, isAdmin, isSpeaker: true }
       visibleToAll: false,
       pendingInvites: new Map() // normNick -> expiry(ms)
     }
   },
-  clients: new Map()            // clientId -> { ws, nick, norm, channel, room|null, isAdmin, mode }
+  // Artık sadece Odaya Katılanlar veya Davet alanlar bu listede olacak.
+  // Pasif dinleyici konsepti KALDIRILDI.
+  clients: new Map()            // clientId -> { ws, nick, norm, channel, room|null, isAdmin }
 };
 
 // Eski davetleri temizle (30 sn)
@@ -96,8 +98,6 @@ const server = http.createServer((req, res) => {
   }
 
   // === Eggdrop -> Voice webhook (invite / revoke / kick) ===
-  // server.js dosyanızda bu bölümü aşağıdakiyle değiştirin
-// === Eggdrop -> Voice webhook (invite / revoke / kick) ===
 if (req.method === 'POST' && req.url === '/webhook/eggdrop') {
   let body = '';
   req.on('data', ch => body += ch);
@@ -107,11 +107,6 @@ if (req.method === 'POST' && req.url === '/webhook/eggdrop') {
       const calc = crypto.createHmac('sha256', EGGDROP_SECRET)
         .update(body)
         .digest('hex');
-      try {
-  const bodySha = require('crypto').createHash('sha256').update(body).digest('hex');
-  console.log('Body SHA-256:', bodySha, 'len=', Buffer.byteLength(body));
-} catch {}
-
 
       // ✅ Gelişmiş Teşhis Logları (Sorunu bulmak için eklendi)
       console.log('--- Eggdrop Webhook Request ---');
@@ -128,7 +123,6 @@ if (req.method === 'POST' && req.url === '/webhook/eggdrop') {
         return;
       }
 
-      // ... kodun geri kalanı buradan itibaren aynı ...
       const data = JSON.parse(body || '{}');
       const action = String(data.action || '');
       const byRaw = sanitizeNick(String(data.by || ''));
@@ -141,32 +135,26 @@ if (req.method === 'POST' && req.url === '/webhook/eggdrop') {
         return;
       }
       
-      // ... kodun geri kalanını olduğu gibi bırakın ...
-      
       const byNorm = normNick(byRaw);
       const tgtNorm = normNick(tgtRaw);
 
       if (action === 'invite') {
-  // YENİ: O an bağlı olan tüm istemcilerin nick'lerini logla.
-  console.log('[DEBUG] Aktif istemciler:', [...state.clients.values()].map(c => c.nick));
+        const expiry = now() + INVITE_TTL_MS;
+        state.rooms[room].pendingInvites.set(tgtNorm, expiry);
 
-  const expiry = now() + INVITE_TTL_MS;
-  state.rooms[room].pendingInvites.set(tgtNorm, expiry);
-
-        for (const [cid, m] of state.rooms[room].members.entries()) {
-          if (m.norm === tgtNorm) {
-            m.isSpeaker = true;
-            send(m.ws, 'speakerGranted', { room, ttl: INVITE_TTL_MS });
-            send(m.ws, 'invited', { from: byRaw, ttl: INVITE_TTL_MS, room });
-          }
-        }
-
+        // O an bağlı olan ve odaya katılmamış tüm istemcilere (yeni modelde bu, `join` yapmaya çalışanlardır) davet gönder.
+        // NOT: Yeni modelde 'passive' mod kaldırıldığı için, bu döngü daveti sadece ZATEN ODAYA BAĞLI OLANLARA
+        // veya Henüz `join` yapmamış ama `hello` yerine bağlanmış olanlara ulaştırır.
+        // Yeni modelde davetin alınması client'ın join denemesi sırasında davetli olup olmadığının kontrolüyle sağlanacak.
+        // Ancak yine de client açıksa popup gözüksün diye gönderelim.
         for (const [cid, c] of state.clients.entries()) {
-          if ((c.norm || normNick(c.nick)) === tgtNorm) {
-            send(c.ws, 'invited', { from: byRaw, ttl: INVITE_TTL_MS, room });
+          if (c.norm === tgtNorm) { // Sadece nick eşleşenlere
+             // Eğer ODA'daysa ve admin değilse 'speakerGranted' (Zaten isSpeaker:true yapılacak)
+             // send(c.ws, 'speakerGranted', { room, ttl: INVITE_TTL_MS });
+             send(c.ws, 'invited', { from: byRaw, ttl: INVITE_TTL_MS, room });
           }
         }
-
+        
         console.log(`[INVITE] ${byRaw} -> ${tgtRaw}`);
         json(res, 200, { ok: true });
         return;
@@ -177,8 +165,11 @@ if (req.method === 'POST' && req.url === '/webhook/eggdrop') {
         state.rooms[room].pendingInvites.delete(tgtNorm);
         for (const [cid, m] of state.rooms[room].members.entries()) {
           if (m.norm === tgtNorm && !m.isAdmin) {
-            m.isSpeaker = false;
-            send(m.ws, 'speakerRevoked', { room });
+            // isSpeaker=false ayarı artık gereksiz, herkes isSpeaker:true olacak
+            // m.isSpeaker = false; // KALDIRILDI
+            send(m.ws, 'speakerRevoked', { room }); // Yine de client'a bilgi verelim
+            // Revoke edilirse, davet kalktığı için odaya katılımı engellemek gereksiz (tekrar davet edilene kadar)
+            // Ama o an odadaysa admin değilse kickleyebiliriz. (Şimdilik kicklemiyoruz, sadece daveti kaldırıyoruz)
           }
         }
         console.log(`[REVOKE] ${byRaw} -> ${tgtRaw}`);
@@ -211,8 +202,7 @@ if (req.method === 'POST' && req.url === '/webhook/eggdrop') {
   });
   return;
 }
-
-
+// ... [HTTP sunucusunun geri kalanı, /irc-kick ve /irc-invite dahil] ...
   // === Basit /irc-kick (token'lı) — istersen tut ===
   if (req.method === 'POST' && req.url === '/irc-kick') {
     let body=''; req.on('data', c => body += c);
@@ -263,15 +253,14 @@ if (req.method === 'POST' && req.url === '/webhook/eggdrop') {
         const expiry = now() + INVITE_TTL_MS;
         state.rooms[room].pendingInvites.set(tgtNorm, expiry);
 
-        // Odadaysa terfi + popup
+        // Odadaysa terfi + popup (Artık herkes speaker)
         for (const [cid, m] of state.rooms[room].members.entries()){
           if (m.norm === tgtNorm){
-            m.isSpeaker = true;
-            send(m.ws, 'speakerGranted', { room, ttl: INVITE_TTL_MS });
+            m.isSpeaker = true; // Zaten true olacak ama yine de...
             send(m.ws, 'invited', { from: fromRaw, ttl: INVITE_TTL_MS, room });
           }
         }
-        // Pasif WS varsa popup
+        // Pasif WS varsa popup (yeni modelde passive yok, ama bağlanmış olanlara gönder)
         for (const [cid, c] of state.clients.entries()){
           if ((c.norm || normNick(c.nick)) === tgtNorm){
             send(c.ws, 'invited', { from: fromRaw, ttl: INVITE_TTL_MS, room });
@@ -324,16 +313,21 @@ wss.on('connection', (ws) => {
     try { msg = JSON.parse(buf.toString()); } catch { return; }
     const t = msg.type;
 
-    // Pasif tanıtım (panel açmadan davet alabilsin)
+    // Pasif tanıtım (hello) KALDIRILDI. Artık ilk mesaj join olacak.
     if (t === 'hello') {
+      // Yine de client'ın nick bilgisini alıp, davet mesajını atabilmek için
+      // Client listesine ekleyelim ama "passive" mode'da.
       const nickRaw  = sanitizeNick(msg.nick);
       const nickNorm = normNick(nickRaw);
       const channel  = String(msg.channel || '').toLowerCase();
+      
+      // Geçici olarak client listesine ekleyelim ki davet geldiğinde popup çıksın.
+      // Room'a katılana kadar `meta` null kalacak.
       state.clients.set(clientId, {
         ws, nick: nickRaw, norm: nickNorm, channel, room: null,
         isAdmin: ADMIN_NICKS.has(nickNorm), mode:'passive'
       });
-
+      
       const exp = state.rooms[SINGLE_ROOM].pendingInvites.get(nickNorm);
       if (exp && exp > now()) {
         send(ws, 'invited', { from:'Yönetici', ttl:(exp-now()), room:SINGLE_ROOM });
@@ -341,7 +335,7 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // Odaya katıl (dinleyici serbest; konuşmacı = admin veya davetli)
+    // Odaya katıl (dinleyici KABUL EDİLMEYECEK)
     if (t === 'join') {
       const nickRaw  = sanitizeNick(msg.nick);
       const nickNorm = normNick(nickRaw);
@@ -351,19 +345,26 @@ wss.on('connection', (ws) => {
       if (!CHANNEL_WHITELIST.has(channel)) { send(ws, 'error', { error:'channel-not-allowed' }); return; }
 
       const isAdmin  = ADMIN_NICKS.has(nickNorm);
-      let isSpeaker  = isAdmin;
-      if (!isAdmin) {
-        const exp = state.rooms[room].pendingInvites.get(nickNorm);
-        if (exp && exp > now()) {
-          isSpeaker = true;
-          state.rooms[room].pendingInvites.delete(nickNorm);
-        } else {
-          isSpeaker = false;
-        }
+      let isInvited  = false;
+      
+      const exp = state.rooms[room].pendingInvites.get(nickNorm);
+      if (exp && exp > now()) {
+        isInvited = true;
+        state.rooms[room].pendingInvites.delete(nickNorm);
       }
-
+      
+      // **YENİ KURAL: YALNIZCA ADMIN VEYA DAVETLİLER KATILABİLİR**
+      if (!isAdmin && !isInvited) {
+        send(ws, 'error', { error:'not-authorized-to-join' });
+        console.log(`[JOIN FAIL] ${nickRaw} -> Not Admin or Invited`);
+        return;
+      }
+      
+      // Artık katılan herkes KONUŞMACI
+      const isSpeaker = true;
+      
       meta = { nick: nickRaw, norm: nickNorm, channel, room, isAdmin };
-      state.clients.set(clientId, { ws, ...meta });
+      state.clients.set(clientId, { ws, ...meta }); // Eğer client önceden hello ile kaydolduysa bu update eder.
       state.rooms[room].members.set(clientId, { ws, nick: nickRaw, norm: nickNorm, isAdmin, isSpeaker });
 
       send(ws, 'joined', {
@@ -376,13 +377,28 @@ wss.on('connection', (ws) => {
       });
 
       broadcastRoom(room, { type:'peer-join', nick: nickRaw, isSpeaker }, clientId);
+      console.log(`[JOIN SUCCESS] ${nickRaw} -> isSpeaker: ${isSpeaker}, isAdmin: ${isAdmin}, isInvited: ${isInvited}`);
       return;
     }
 
-    if (!meta) return;
+    if (!meta && !state.clients.has(clientId)) return; // Meta null ise ve hello da geçilmemişse (eskiden join denemesi yapmamışsa)
+
+    // Eğer hello ile bağlanmış bir client, odaya katılmadan signal göndermeye çalışırsa engelle.
+    if (!meta && state.clients.get(clientId)?.mode === 'passive') return;
+    
+    // Eğer meta yoksa, (hello ile passive bağlanmış) ama `join` değilse, hata ver.
+    if (!meta) {
+      // Eğer client daha önce hello ile bağlanmışsa, meta'yı alalım.
+      meta = state.clients.get(clientId);
+      if (!meta || !meta.room) return; // Hala odaya katılmamış.
+    }
+    
     const { room, isAdmin } = meta;
 
     if (t === 'signal') {
+      // Odaya katılmamışsa signal göndermeyi engelle
+      if (!state.rooms[room]?.members.has(clientId)) return;
+      
       const { to, data } = msg;
       const toNorm = normNick(to);
       try {
@@ -415,16 +431,12 @@ wss.on('connection', (ws) => {
     if (c) {
       const { room, nick } = c;
       state.clients.delete(clientId);
-      state.rooms[room]?.members.delete(clientId);
-      if (room) broadcastRoom(room, { type:'peer-leave', nick });
+      if (room) { // Sadece Odaya KATILMIŞSA (meta.room !== null)
+        state.rooms[room]?.members.delete(clientId);
+        broadcastRoom(room, { type:'peer-leave', nick });
+      }
     }
   });
 });
 
 server.listen(PORT, () => console.log('listening on', PORT));
-
-
-
-
-
-

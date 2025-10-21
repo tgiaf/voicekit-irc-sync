@@ -350,6 +350,27 @@ wss.on('connection', ws => {
         isSpeaker,
       });
 
+      // 🟢 Eğer sadece bot varsa, bu ilk gerçek katılımcıdır.
+// Odaya otomatik olarak seslichat botunu "aktif" olarak ekle.
+const r = state.rooms[room];
+const realCount = [...r.members.values()].filter(m => !m.isBot).length;
+if (realCount === 1) {
+  const botAlready = [...r.members.values()].some(m => m.isBot);
+  if (!botAlready) {
+    const fakeId = `bot-${ALLOWED_BOT}`;
+    r.members.set(fakeId, {
+      ws: null,
+      nick: ALLOWED_BOT,
+      norm: ALLOWED_BOT,
+      isAdmin: true,
+      isSpeaker: false,
+      isBot: true,
+    });
+    console.log(`[AUTO] Seslichat bot added to room for first joiner.`);
+  }
+}
+
+
       send(ws, 'joined', {
         clientId,
         room,
@@ -426,4 +447,5 @@ wss.on('connection', ws => {
 server.listen(PORT, () =>
   console.log(`✅ Voice signaling server listening on port ${PORT}`)
 );
+
 

@@ -21,7 +21,7 @@ const ADMIN_NICKS = new Set(
 
 // sadece bu kanaldan katılım
 const CHANNEL_WHITELIST = new Set(
-  (process.env.CHANNEL_WHITELIST || '#radyo')
+  (process.env.CHANNEL_WHITELIST || '#sesli')
     .split(',')
     .map(s => s.trim().toLowerCase())
 );
@@ -152,7 +152,7 @@ const server = http.createServer((req, res) => {
         const action = String(data.action || '');
         const byRaw = sanitizeNick(String(data.by || ''));
         const tgtRaw = sanitizeNick(String(data.target || ''));
-        const chan = String(data.channel || '#radyo').toLowerCase();
+        const chan = String(data.channel || '#sesli').toLowerCase();
         const room = SINGLE_ROOM;
         const byNorm = normNick(byRaw);
         const tgtNorm = normNick(tgtRaw);
@@ -447,5 +447,6 @@ if (realCount === 1) {
 server.listen(PORT, () =>
   console.log(`✅ Voice signaling server listening on port ${PORT}`)
 );
+
 
 

@@ -93,6 +93,7 @@ function ensureSeslichatBot() {
       isAdmin: true,
       isSpeaker: false,
       isBot: true,
+      isMuted: true, // Bot varsayılan sessiz
     });
     console.log(`[BOT] Seslichat bot added to room`);
   }
@@ -348,6 +349,7 @@ wss.on('connection', ws => {
         norm: nickNorm,
         isAdmin,
         isSpeaker,
+        isMuted: true, // Kullanıcı varsayılan sessiz başlasın
       });
 
       // 🟢 Eğer sadece bot varsa, bu ilk gerçek katılımcıdır.
@@ -382,10 +384,11 @@ if (realCount === 1) {
             nick: m.nick,
             isAdmin: m.isAdmin,
             isSpeaker: m.isSpeaker,
+            isMuted: !!m.isMuted, // Mute bilgisini ekle
           })),
       });
 
-      broadcastRoom(room, { type: 'peer-join', nick: nickRaw, isSpeaker }, clientId);
+      broadcastRoom(room, { type: 'peer-join', nick: nickRaw, isSpeaker, isMuted: true }, clientId);
       console.log(`[JOIN SUCCESS] ${nickRaw}`);
       return;
     }
@@ -398,6 +401,16 @@ if (realCount === 1) {
     }
 
     const { room, isAdmin } = meta;
+
+    // --- Mute Durumu Güncelleme ---
+    if (t === 'muteStatus') {
+      if (!state.rooms[room]?.members.has(clientId)) return;
+      const m = state.rooms[room].members.get(clientId);
+      m.isMuted = !!msg.value;
+      // Odadaki diğer herkese bildir (Flutter'daki peer-update'i tetikler)
+      broadcastRoom(room, { type: 'peer-update', nick: m.nick, isMuted: m.isMuted });
+      return;
+    }
 
     if (t === 'signal') {
       if (!state.rooms[room]?.members.has(clientId)) return;
@@ -447,6 +460,7 @@ if (realCount === 1) {
 server.listen(PORT, () =>
   console.log(`✅ Voice signaling server listening on port ${PORT}`)
 );
+
 
 
 

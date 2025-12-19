@@ -253,8 +253,10 @@ server.on('upgrade', (req, socket, head) => {
 
 function send(ws, type, payload = {}) {
   try {
-    if (!ws) return;
-    ws.send(JSON.stringify({ type, ...payload }));
+    // Sadece bağlantı AÇIK (readyState === 1) ise gönder
+    if (ws && ws.readyState === 1) { 
+      ws.send(JSON.stringify({ type, ...payload }));
+    }
   } catch {}
 }
 
@@ -265,14 +267,31 @@ function broadcastRoom(roomKey, msgObj, exceptId = null) {
   for (const [cid, m] of r.members.entries()) {
     if (cid === exceptId || !m.ws) continue;
     try {
-      m.ws.send(s);
+      if (m.ws.readyState === 1) m.ws.send(s);
     } catch {}
   }
 }
 
+// --- Heartbeat (Ping/Pong) ---
+// Render.com bağlantıyı kesmesin diye 30 saniyede bir kontrol
+const interval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) return ws.terminate();
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
+wss.on('close', () => {
+  clearInterval(interval);
+});
+
 wss.on('connection', ws => {
-  // Odayı her bağlantıda kontrol et
   ensureSeslichatBot();
+  
+  // Heartbeat başlangıcı
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
 
   const clientId = nanoid(10);
   let meta = null;
@@ -290,6 +309,15 @@ wss.on('connection', ws => {
       const nickRaw = sanitizeNick(msg.nick);
       const nickNorm = normNick(nickRaw);
       const channel = String(msg.channel || '').toLowerCase();
+
+      // Duplicate Check: Eğer kullanıcı zaten bağlı görünüyorsa eski bağlantısını kapat
+      for (const [cid, client] of state.clients.entries()) {
+         if (client.norm === nickNorm) {
+            console.log(`[DUPLICATE] Closing old connection for ${nickNorm}`);
+            try { client.ws.close(); } catch {}
+            state.clients.delete(cid);
+         }
+      }
 
       state.clients.set(clientId, {
         ws,
@@ -460,6 +488,7 @@ if (realCount === 1) {
 server.listen(PORT, () =>
   console.log(`✅ Voice signaling server listening on port ${PORT}`)
 );
+
 
 
 

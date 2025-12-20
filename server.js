@@ -384,20 +384,12 @@ wss.on('connection', ws => {
 
       // 🔒 Yalnızca admin veya davetliler katılabilir
       if (!isAdmin && !isInvited) {
-        // İsteğe bağlı: Herkesin girmesine izin vermek istersen burayı kapat.
-        // Şimdilik admin/davetli kuralını koruyoruz ama rolü değiştiriyoruz:
-        
-        // send(ws, 'error', { error: 'not-authorized-to-join' });
-        // return;
+        send(ws, 'error', { error: 'not-authorized-to-join' });
+        console.log(`[JOIN FAIL] ${nickRaw} -> Not Admin or Invited`);
+        return;
       }
 
-      // YENİ ROL MANTIĞI:
-      // Adminler ve Davetliler -> Konuşmacı (Duyar/Konuşur)
-      // Diğerleri -> Bekleyen/Dinleyici (Duyamaz/Konuşamaz)
-      let isSpeaker = false;
-      if (isAdmin || isInvited) {
-        isSpeaker = true;
-      }
+      const isSpeaker = true; // <--- BU SATIRI VE ÜSTÜNDEKİLERİ BUL
 
       meta = { nick: nickRaw, norm: nickNorm, channel, room, isAdmin };
       state.clients.set(clientId, { ws, ...meta });
@@ -506,56 +498,14 @@ if (realCount === 1) {
       return;
     }
 
-    // --- YÖNETİCİ KOMUTLARI ---
-    if (isAdmin) {
-      // 1. KICK (Sesten At)
-      if (t === 'admin:kick') {
-         const targetId = msg.targetId;
-         if (state.rooms[room].members.has(targetId)) {
-             const m = state.rooms[room].members.get(targetId);
-             send(m.ws, 'kicked', { reason: 'Yönetici tarafından atıldınız.' });
-             try { m.ws.close(); } catch(e){} 
-             state.rooms[room].members.delete(targetId);
-             broadcastRoom(room, { type: 'peer-leave', nick: m.nick, clientId: targetId });
-         }
-         return;
-      }
-
-      // 2. KONUŞMACI YAP (Sahneye Al)
-      if (t === 'admin:grantSpeaker') {
-         const targetId = msg.targetId;
-         if (state.rooms[room].members.has(targetId)) {
-             const m = state.rooms[room].members.get(targetId);
-             m.isSpeaker = true;
-             m.isMuted = true; // Sahneye çıkınca mikrofon kapalı başlasın
-             broadcastRoom(room, { 
-                type: 'peer-update', 
-                nick: m.nick, 
-                clientId: targetId,
-                isSpeaker: true,
-                isMuted: true 
-             });
-         }
-         return;
-      }
-
-      // 3. DİNLEYİCİ YAP (Bekleme Odasına Gönder)
-      if (t === 'admin:revokeSpeaker') {
-         const targetId = msg.targetId;
-         if (state.rooms[room].members.has(targetId)) {
-             const m = state.rooms[room].members.get(targetId);
-             m.isSpeaker = false;
-             m.isMuted = true;
-             broadcastRoom(room, { 
-                type: 'peer-update', 
-                nick: m.nick, 
-                clientId: targetId,
-                isSpeaker: false,
-                isMuted: true 
-             });
-         }
-         return;
-      }
+    if (
+      t === 'admin:invite' ||
+      t === 'admin:kick' ||
+      t === 'admin:revoke' ||
+      t === 'admin:forceMute'
+    ) {
+      send(ws, 'error', { error: 'not-authorized' });
+      return;
     }
   });
 

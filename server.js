@@ -462,6 +462,23 @@ if (realCount === 1) {
       return;
     }
 
+    // --- YENİ: ODADAN AYRILMA (LEAVE) ---
+    if (t === 'leave') {
+      if (state.rooms[room] && state.rooms[room].members.has(clientId)) {
+        state.rooms[room].members.delete(clientId);
+        // Herkese bildir
+        broadcastRoom(room, { type: 'peer-leave', nick: meta.nick, clientId });
+        
+        // Kullanıcıyı 'passive' moda çek (Socket kopmaz ama odadan çıkar)
+        meta.room = null;
+        meta.mode = 'passive';
+        state.clients.set(clientId, meta);
+        console.log(`[LEAVE] ${meta.nick} left the room.`);
+      }
+      return;
+    }
+    // -----------------------------------
+
     if (t === 'signal') {
       if (!state.rooms[room]?.members.has(clientId)) return;
       const { to, data } = msg;
@@ -510,6 +527,7 @@ if (realCount === 1) {
 server.listen(PORT, () =>
   console.log(`✅ Voice signaling server listening on port ${PORT}`)
 );
+
 
 
 

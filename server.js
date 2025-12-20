@@ -223,6 +223,28 @@ const server = http.createServer((req, res) => {
           return;
         }
 
+        // --- YENİ: OTOMATİK ADMİN EKLEME ---
+        if (action === 'add_admin') {
+           // Nicki admin listesine ekle
+           ADMIN_NICKS.add(tgtNorm);
+           console.log(`[AUTO-ADMIN] ${tgtRaw} added to admin list by bot.`);
+           
+           // Eğer kullanıcı zaten bağlıysa, ona anlık olarak admin yetkisi ver
+           for (const [cid, c] of state.clients.entries()) {
+             if (c.norm === tgtNorm) {
+               c.isAdmin = true;
+               // Odadaysa oradaki yetkisini de güncelle
+               if (c.room && state.rooms[c.room]) {
+                 const m = state.rooms[c.room].members.get(cid);
+                 if(m) m.isAdmin = true;
+               }
+             }
+           }
+           json(res, 200, { ok: true });
+           return;
+        }
+        // -----------------------------------
+
         json(res, 400, { ok: false, error: 'unknown-action' });
       } catch (e) {
         console.error('webhook/eggdrop parse fail', e);
@@ -488,6 +510,7 @@ if (realCount === 1) {
 server.listen(PORT, () =>
   console.log(`✅ Voice signaling server listening on port ${PORT}`)
 );
+
 
 
 

@@ -383,9 +383,14 @@ wss.on('connection', ws => {
       }
 
       // 🔒 Yalnızca admin veya davetliler katılabilir
-      if (!isAdmin && !isInvited) {
+      // GÜNCELLENDİ: YETKİ KONTROLÜ
+      // Sadece 'roomA' (#sesli lobisi) ise Admin veya Davetli şartı ara.
+      // Diğer odalar (Okey masaları) herkese açıktır.
+      const isLobbyRoom = (roomName === 'roomA');
+
+      if (isLobbyRoom && !isAdmin && !isInvited) {
+        console.log(`[JOIN REJECT] ${nickRaw} -> Not Admin or Invited for Lobby`);
         send(ws, 'error', { error: 'not-authorized-to-join' });
-        console.log(`[JOIN FAIL] ${nickRaw} -> Not Admin or Invited`);
         return;
       }
 
@@ -527,6 +532,7 @@ if (realCount === 1) {
 server.listen(PORT, () =>
   console.log(`✅ Voice signaling server listening on port ${PORT}`)
 );
+
 
 
 

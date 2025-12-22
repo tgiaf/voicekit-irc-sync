@@ -25,70 +25,103 @@ const CHANNEL_WHITELIST = new Set(
     .split(',')
     .map(s => s.trim().toLowerCase())
 );
-// --- ODA ADI BELİRLEME ---
-function getRoomNameFromChannel(channel) {
-    const ch = channel.toLowerCase();
-    if (ch.startsWith('private_')) return ch; 
-    if (ch === '#sesli') return 'roomA';
-    return ch.replace('#', 'room_'); 
-}
 
+const SINGLE_ROOM = 'roomA';
+const SECRET_TOKEN = process.env.SECRET_TOKEN || 'change-this-secret';
 const INVITE_TTL_MS = Number(process.env.INVITE_TTL_MS || 60_000);
-const EGGDROP_SECRET = process.env.EGGDROP_SECRET || '5f7a2c7f3b2a9f0b0cd1d5e2a1b47b8fa7c2bd31f8f8479a6b3c2d1e0f9a7c5d';
+const EGGDROP_SECRET =
+  process.env.EGGDROP_SECRET ||
+  '5f7a2c7f3b2a9f0b0cd1d5e2a1b47b8fa7c2bd31f8f8479a6b3c2d1e0f9a7c5d';
+
+// 🔐 Sadece bu bot davet gönderebilir
 const ALLOWED_BOT = 'seslichat';
 
-// ---- STATE (MULTI-ROOM) ----
-const state = {
-  rooms: new Map(),
-  clients: new Map(),
-};
-
-function getOrCreateRoom(roomName) {
-    if (!state.rooms.has(roomName)) {
-        state.rooms.set(roomName, {
-            members: new Map(),
-            visibleToAll: false,
-            pendingInvites: new Map(),
-            createdAt: Date.now()
-        });
-        if (roomName === 'roomA') ensureSeslichatBot(roomName);
-    }
-    return state.rooms.get(roomName);
+function okOrigin(origin) {
+  if (!origin) return true;
+  if (ALLOWED_ORIGINS.includes('*')) return true;
+  try {
+    const o = new URL(origin);
+    return ALLOWED_ORIGINS.some(a => {
+      const A = new URL(a);
+      return A.protocol === o.protocol && A.host === o.host;
+    });
+  } catch {
+    return false;
+  }
 }
 
-function ensureSeslichatBot(roomName) {
-  const r = state.rooms.get(roomName);
+const now = () => Date.now();
+
+function json(res, code, obj) {
+  res.writeHead(code, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(obj));
+}
+
+function sanitizeNick(n) {
+  return String(n || '')
+    .replace(/[^A-Za-z0-9_\-\[\]{}^`|]/g, '')
+    .slice(0, 24);
+}
+function normNick(n) {
+  return sanitizeNick(n).toLowerCase();
+}
+
+function safeEqualHex(a, b) {
+  try {
+    const A = Buffer.from(String(a), 'hex');
+    const B = Buffer.from(String(b), 'hex');
+    if (A.length !== B.length) return false;
+    return crypto.timingSafeEqual(A, B);
+  } catch {
+    return false;
+  }
+}
+
+// ---- Oda durumu ----
+
+// Oda her zaman en az bir "seslichat" botu içersin
+function ensureSeslichatBot() {
+  const r = state.rooms[SINGLE_ROOM];
   if (!r) return;
   const already = [...r.members.values()].some(m => m.norm === ALLOWED_BOT);
   if (!already) {
-    const fakeId = `bot-${ALLOWED_BOT}-${roomName}`;
+    const fakeId = `bot-${ALLOWED_BOT}`;
     r.members.set(fakeId, {
-      ws: null, nick: ALLOWED_BOT, norm: ALLOWED_BOT,
-      isAdmin: true, isSpeaker: false, isBot: true, isMuted: true,
+      ws: null,
+      nick: ALLOWED_BOT,
+      norm: ALLOWED_BOT,
+      isAdmin: true,
+      isSpeaker: false,
+      isBot: true,
+      isMuted: true, // Bot varsayılan sessiz
     });
+    console.log(`[BOT] Seslichat bot added to room`);
   }
 }
 
-// Oda Temizliği (Garbage Collection)
-setInterval(() => {
-    for (const [roomName, room] of state.rooms.entries()) {
-        if (roomName === 'roomA') continue;
-        if (room.members.size === 0 && room.pendingInvites.size === 0) {
-            state.rooms.delete(roomName);
-        }
-    }
-}, 600_000);
+const state = {
+  rooms: {
+    [SINGLE_ROOM]: {
+      members: new Map(),
+      visibleToAll: false,
+      pendingInvites: new Map(),
+    },
+  },
+  clients: new Map(),
+};
 
-// Davet Temizliği
+// Başlangıçta odayı botla doldur
+ensureSeslichatBot();
+
+// Eski davetleri temizle (30 sn)
 setInterval(() => {
-  for (const [name, room] of state.rooms.entries()) {
-      for (const [nk, exp] of room.pendingInvites.entries()) {
-        if (exp <= Date.now()) room.pendingInvites.delete(nk);
-      }
+  const r = state.rooms[SINGLE_ROOM];
+  for (const [nk, exp] of r.pendingInvites.entries()) {
+    if (exp <= now()) r.pendingInvites.delete(nk);
   }
 }, 30_000);
 
-getOrCreateRoom('roomA');
+// ---- HTTP server ----
 const server = http.createServer((req, res) => {
   // Sağlık
   if (req.method === 'GET' && req.url === '/') {
@@ -121,8 +154,7 @@ const server = http.createServer((req, res) => {
         const byRaw = sanitizeNick(String(data.by || ''));
         const tgtRaw = sanitizeNick(String(data.target || ''));
         const chan = String(data.channel || '#sesli').toLowerCase();
-        const roomName = getRoomNameFromChannel(chan);
-        const room = getOrCreateRoom(roomName);
+        const room = SINGLE_ROOM;
         const byNorm = normNick(byRaw);
         const tgtNorm = normNick(tgtRaw);
 
@@ -330,77 +362,100 @@ wss.on('connection', ws => {
       return;
     }
 
-   if (t === 'join') {
-      if (!state.clients.has(clientId)) return;
-      const clientMeta = state.clients.get(clientId);
-      
-      // 1. ESKİ ODADAN ÇIKIŞ (Aynı anda tek yerde bulunma kuralı)
-      if (clientMeta.room && state.rooms.has(clientMeta.room)) {
-          const oldRoom = state.rooms.get(clientMeta.room);
-          if (oldRoom.members.has(clientId)) {
-             oldRoom.members.delete(clientId);
-             broadcastRoom(clientMeta.room, { type: 'peer-leave', nick: clientMeta.nick });
-          }
+    if (t === 'join') {
+      const nickRaw = sanitizeNick(msg.nick);
+      const nickNorm = normNick(nickRaw);
+      const channel = String(msg.channel || '').toLowerCase();
+      const room = SINGLE_ROOM;
+
+      if (!CHANNEL_WHITELIST.has(channel)) {
+        send(ws, 'error', { error: 'channel-not-allowed' });
+        return;
       }
-      
-      const nickRaw = clientMeta.nick;
-      const nickNorm = clientMeta.norm;
-      const reqChannel = String(msg.channel || clientMeta.channel).toLowerCase();
-      
-      // 2. YENİ ODAYI BELİRLE
-      const roomName = getRoomNameFromChannel(reqChannel);
-      const room = getOrCreateRoom(roomName);
 
       const isAdmin = ADMIN_NICKS.has(nickNorm);
       let isInvited = false;
-      const exp = room.pendingInvites.get(nickNorm);
-      if (exp && exp > Date.now()) {
+
+      const exp = state.rooms[room].pendingInvites.get(nickNorm);
+      if (exp && exp > now()) {
         isInvited = true;
-        room.pendingInvites.delete(nickNorm);
+        state.rooms[room].pendingInvites.delete(nickNorm);
       }
 
-      // 3. YETKİ VE KAPASİTE KONTROLÜ
+      // 🔒 Yalnızca admin veya davetliler katılabilir
+      // GÜNCELLENDİ: YETKİ KONTROLÜ
+      // Sadece 'roomA' (#sesli lobisi) ise Admin veya Davetli şartı ara.
+      // Diğer odalar (Okey masaları) herkese açıktır.
+      // YETKİ VE KAPASİTE KONTROLÜ
       const isLobbyRoom = (roomName === 'roomA');
       const isPrivateRoom = roomName.startsWith('private_');
 
-      // Lobi Kontrolü
+      // 1. Lobi Yetki Kontrolü
       if (isLobbyRoom && !isAdmin && !isInvited) {
         send(ws, 'error', { error: 'not-authorized-to-join' });
         return;
       }
 
-      // Özel Oda Kapasite Kontrolü (Max 2 Kişi - Onaylama Mantığı)
+      // 2. Özel Oda Kapasite Kontrolü (Max 2 Kişi)
+      // Eğer oda özel bir odaysa ve içeride zaten 2 veya daha fazla kişi varsa,
+      // ve giren kişi zaten içeridekilerden biri değilse (örn. reconnect değilse) reddet.
       if (isPrivateRoom && room.members.size >= 2 && !room.members.has(clientId)) {
-         send(ws, 'error', { error: 'room-full' });
+         console.log(`[JOIN REJECT] ${nickRaw} -> Private room ${roomName} is full.`);
+         send(ws, 'error', { error: 'room-full' }); // Flutter'da "Oda Dolu/Meşgul" uyarısı gösterilebilir
          return;
       }
 
-      const isSpeaker = true; 
+      const isSpeaker = true; // <--- BU SATIRI VE ÜSTÜNDEKİLERİ BUL
 
-      clientMeta.room = roomName;
-      clientMeta.mode = 'active';
-      state.clients.set(clientId, clientMeta);
-
-      room.members.set(clientId, {
-        ws, nick: nickRaw, norm: nickNorm,
-        isAdmin, isSpeaker, isMuted: true, isBot: false
+      meta = { nick: nickRaw, norm: nickNorm, channel, room, isAdmin };
+      state.clients.set(clientId, { ws, ...meta });
+      state.rooms[room].members.set(clientId, {
+        ws,
+        nick: nickRaw,
+        norm: nickNorm,
+        isAdmin,
+        isSpeaker,
+        isMuted: true, // Kullanıcı varsayılan sessiz başlasın
       });
 
-      if (isLobbyRoom) {
-          const realCount = [...room.members.values()].filter(m => !m.isBot).length;
-          if (realCount === 1) ensureSeslichatBot(roomName);
-      }
+      // 🟢 Eğer sadece bot varsa, bu ilk gerçek katılımcıdır.
+// Odaya otomatik olarak seslichat botunu "aktif" olarak ekle.
+const r = state.rooms[room];
+const realCount = [...r.members.values()].filter(m => !m.isBot).length;
+if (realCount === 1) {
+  const botAlready = [...r.members.values()].some(m => m.isBot);
+  if (!botAlready) {
+    const fakeId = `bot-${ALLOWED_BOT}`;
+    r.members.set(fakeId, {
+      ws: null,
+      nick: ALLOWED_BOT,
+      norm: ALLOWED_BOT,
+      isAdmin: true,
+      isSpeaker: false,
+      isBot: true,
+    });
+    console.log(`[AUTO] Seslichat bot added to room for first joiner.`);
+  }
+}
+
 
       send(ws, 'joined', {
-        clientId, room: roomName,
+        clientId,
+        room,
         you: { nick: nickRaw, isAdmin, isSpeaker },
-        visibleToAll: room.visibleToAll,
-        members: [...room.members.values()].filter(m => !m.isBot).map(m => ({
-            nick: m.nick, isAdmin: m.isAdmin, isSpeaker: m.isSpeaker, isMuted: !!m.isMuted
-        })),
+        visibleToAll: state.rooms[room].visibleToAll,
+        members: [...state.rooms[room].members.values()]
+          .filter(m => !m.isBot) // <-- BU SATIRI EKLEYİN
+          .map(m => ({
+            nick: m.nick,
+            isAdmin: m.isAdmin,
+            isSpeaker: m.isSpeaker,
+            isMuted: !!m.isMuted, // Mute bilgisini ekle
+          })),
       });
 
-      broadcastRoom(roomName, { type: 'peer-join', nick: nickRaw, isSpeaker, isMuted: true }, clientId);
+      broadcastRoom(room, { type: 'peer-join', nick: nickRaw, isSpeaker, isMuted: true }, clientId);
+      console.log(`[JOIN SUCCESS] ${nickRaw}`);
       return;
     }
 
@@ -488,15 +543,3 @@ wss.on('connection', ws => {
 server.listen(PORT, () =>
   console.log(`✅ Voice signaling server listening on port ${PORT}`)
 );
-
-
-
-
-
-
-
-
-
-
-
-

@@ -28,13 +28,6 @@ const CHANNEL_WHITELIST = new Set(
 
 const SINGLE_ROOM = 'roomA';
 const SECRET_TOKEN = process.env.SECRET_TOKEN || 'change-this-secret';
-
-// ===== PRIVATE 1-1 ROOMS (EK) =====
-const PRIVATE_PREFIX = 'private_';
-const PRIVATE_TTL_MS = Number(process.env.PRIVATE_TTL_MS || 10 * 60_000); // 10 dk (isteğe göre)
-const MAX_PRIVATE_ROOMS = Number(process.env.MAX_PRIVATE_ROOMS || 500);   // render için limit (isteğe göre)
-// ==================================
-
 const INVITE_TTL_MS = Number(process.env.INVITE_TTL_MS || 60_000);
 const EGGDROP_SECRET =
   process.env.EGGDROP_SECRET ||
@@ -114,13 +107,8 @@ const state = {
       pendingInvites: new Map(),
     },
   },
-
-  // EK: private oda meta index (roomKey -> { aNorm, bNorm, expiresAt })
-  privateIndex: new Map(),
-
   clients: new Map(),
 };
-
 
 // Başlangıçta odayı botla doldur
 ensureSeslichatBot();
@@ -294,55 +282,6 @@ function send(ws, type, payload = {}) {
   } catch {}
 }
 
-function makePrivateRoomKey(aNorm, bNorm) {
-  // iki nick sırası fark etmesin diye sort
-  const pair = [aNorm, bNorm].sort().join('_');
-  // tahmin edilemezlik için nanoid karıştır
-  return `${PRIVATE_PREFIX}${pair}_${nanoid(10)}`;
-}
-
-function ensurePrivateRoom(aNorm, bNorm) {
-  // limit (render memory koruma)
-  if (state.privateIndex.size >= MAX_PRIVATE_ROOMS) return null;
-
-  const roomKey = makePrivateRoomKey(aNorm, bNorm);
-  const expiresAt = now() + PRIVATE_TTL_MS;
-
-  state.rooms[roomKey] = {
-    members: new Map(),
-    visibleToAll: false,
-    pendingInvites: new Map(),
-
-    // EK private meta
-    isPrivate: true,
-    allowed: new Set([aNorm, bNorm]),
-    expiresAt,
-  };
-
-  state.privateIndex.set(roomKey, { aNorm, bNorm, expiresAt });
-  return roomKey;
-}
-
-// Süresi geçen private odaları temizle
-setInterval(() => {
-  for (const [roomKey, meta] of state.privateIndex.entries()) {
-    if (meta.expiresAt <= now()) {
-      // odadaki varsa uyar ve kapat
-      const r = state.rooms[roomKey];
-      if (r) {
-        for (const [, m] of r.members.entries()) {
-          if (m.ws) send(m.ws, 'error', { error: 'private-room-expired' });
-          try { m.ws?.close?.(4001, 'private-room-expired'); } catch {}
-        }
-      }
-      delete state.rooms[roomKey];
-      state.privateIndex.delete(roomKey);
-      console.log(`[PRIVATE] expired room cleaned: ${roomKey}`);
-    }
-  }
-}, 30_000);
-
-
 function broadcastRoom(roomKey, msgObj, exceptId = null) {
   const r = state.rooms[roomKey];
   if (!r) return;
@@ -388,66 +327,7 @@ wss.on('connection', ws => {
     }
     const t = msg.type;
 
-// ===== PRIVATE 1-1 CALL (EK) =====
-if (t === 'privateCall:create') {
-  const fromRaw = sanitizeNick(msg.from);
-  const toRaw   = sanitizeNick(msg.to);
-  const fromNorm = normNick(fromRaw);
-  const toNorm   = normNick(toRaw);
-
-  if (!fromNorm || !toNorm || fromNorm === toNorm) {
-    send(ws, 'error', { error: 'bad-private-call' });
-    return;
-  }
-
-  // çağıran bağlı mı?
-  const caller = state.clients.get(clientId);
-  if (!caller || caller.norm !== fromNorm) {
-    send(ws, 'error', { error: 'not-identified' });
-    return;
-  }
-
-  const roomKey = ensurePrivateRoom(fromNorm, toNorm);
-  if (!roomKey) {
-    send(ws, 'error', { error: 'private-room-limit' });
-    return;
-  }
-
-  // çağırana oda bilgisini ver
-  send(ws, 'privateCall:created', {
-    room: roomKey,
-    to: toRaw,
-    ttl: PRIVATE_TTL_MS,
-  });
-
-  // çağrılana bildir (online ise)
-  for (const [, c] of state.clients.entries()) {
-    if (c.norm === toNorm) {
-      send(c.ws, 'privateCall:incoming', {
-        room: roomKey,
-        from: fromRaw,
-        ttl: PRIVATE_TTL_MS,
-      });
-      break;
-    }
-  }
-
-  console.log(`[PRIVATE] create ${fromRaw} -> ${toRaw} room=${roomKey}`);
-  return;
-}
-
-if (t === 'privateCall:join') {
-  // Bu mesaj, aşağıdaki mevcut join mantığını kullanacak.
-  // Sadece msg.room alanını set edip t'yi 'join' gibi davranacağız.
-  // (Flutter tarafında private odaya geçiş için)
-  msg.type = 'join';
-  msg.room = String(msg.room || '');
-  // devam etsin, aşağıdaki join bloğu çalışacak
-}
-// =================================
-
-if (t === 'hello') {
-
+    if (t === 'hello') {
       const nickRaw = sanitizeNick(msg.nick);
       const nickNorm = normNick(nickRaw);
       const channel = String(msg.channel || '').toLowerCase();
@@ -483,43 +363,15 @@ if (t === 'hello') {
     }
 
     if (t === 'join') {
-  const nickRaw = sanitizeNick(msg.nick);
-  const nickNorm = normNick(nickRaw);
-  const channel = String(msg.channel || '').toLowerCase();
+      const nickRaw = sanitizeNick(msg.nick);
+      const nickNorm = normNick(nickRaw);
+      const channel = String(msg.channel || '').toLowerCase();
+      const room = SINGLE_ROOM;
 
-  // EK: client hangi odaya girmek istiyor?
-  const roomNameRaw = String(msg.room || '').trim();
-  const roomName = roomNameRaw ? roomNameRaw : SINGLE_ROOM;
-
-  const isLobbyRoom = (roomName === SINGLE_ROOM);
-  const isPrivateRoom = roomName.startsWith(PRIVATE_PREFIX);
-
-  // 1) LOBBY ise eski kanal whitelist kuralın aynen devam
-  if (isLobbyRoom) {
-    if (!CHANNEL_WHITELIST.has(channel)) {
-      send(ws, 'error', { error: 'channel-not-allowed' });
-      return;
-    }
-  }
-
-  // 2) PRIVATE ise oda var mı + allowed nick kontrolü
-  if (isPrivateRoom) {
-    const r = state.rooms[roomName];
-    if (!r || !r.isPrivate || !r.allowed || !r.allowed.has(nickNorm)) {
-      send(ws, 'error', { error: 'private-not-allowed' });
-      return;
-    }
-
-    // kapasite: max 2 kişi (reconnect hariç)
-    const realCount = [...r.members.values()].filter(m => !m.isBot).length;
-    if (realCount >= 2 && !r.members.has(clientId)) {
-      send(ws, 'error', { error: 'room-full' });
-      return;
-    }
-  }
-
-  const room = roomName;
-
+      if (!CHANNEL_WHITELIST.has(channel)) {
+        send(ws, 'error', { error: 'channel-not-allowed' });
+        return;
+      }
 
       const isAdmin = ADMIN_NICKS.has(nickNorm);
       let isInvited = false;
@@ -534,23 +386,12 @@ if (t === 'hello') {
       // GÜNCELLENDİ: YETKİ KONTROLÜ
       // Sadece 'roomA' (#sesli lobisi) ise Admin veya Davetli şartı ara.
       // Diğer odalar (Okey masaları) herkese açıktır.
-      // YETKİ VE KAPASİTE KONTROLÜ
       const isLobbyRoom = (roomName === 'roomA');
-      const isPrivateRoom = roomName.startsWith('private_');
 
-      // 1. Lobi Yetki Kontrolü
       if (isLobbyRoom && !isAdmin && !isInvited) {
+        console.log(`[JOIN REJECT] ${nickRaw} -> Not Admin or Invited for Lobby`);
         send(ws, 'error', { error: 'not-authorized-to-join' });
         return;
-      }
-
-      // 2. Özel Oda Kapasite Kontrolü (Max 2 Kişi)
-      // Eğer oda özel bir odaysa ve içeride zaten 2 veya daha fazla kişi varsa,
-      // ve giren kişi zaten içeridekilerden biri değilse (örn. reconnect değilse) reddet.
-      if (isPrivateRoom && room.members.size >= 2 && !room.members.has(clientId)) {
-         console.log(`[JOIN REJECT] ${nickRaw} -> Private room ${roomName} is full.`);
-         send(ws, 'error', { error: 'room-full' }); // Flutter'da "Oda Dolu/Meşgul" uyarısı gösterilebilir
-         return;
       }
 
       const isSpeaker = true; // <--- BU SATIRI VE ÜSTÜNDEKİLERİ BUL
@@ -568,27 +409,23 @@ if (t === 'hello') {
 
       // 🟢 Eğer sadece bot varsa, bu ilk gerçek katılımcıdır.
 // Odaya otomatik olarak seslichat botunu "aktif" olarak ekle.
-// SADECE LOBBY (roomA) için bot auto ekle
-if (room === SINGLE_ROOM) {
-  const r = state.rooms[room];
-  const realCount = [...r.members.values()].filter(m => !m.isBot).length;
-  if (realCount === 1) {
-    const botAlready = [...r.members.values()].some(m => m.isBot);
-    if (!botAlready) {
-      const fakeId = `bot-${ALLOWED_BOT}`;
-      r.members.set(fakeId, {
-        ws: null,
-        nick: ALLOWED_BOT,
-        norm: ALLOWED_BOT,
-        isAdmin: true,
-        isSpeaker: false,
-        isBot: true,
-      });
-      console.log(`[AUTO] Seslichat bot added to room for first joiner.`);
-    }
+const r = state.rooms[room];
+const realCount = [...r.members.values()].filter(m => !m.isBot).length;
+if (realCount === 1) {
+  const botAlready = [...r.members.values()].some(m => m.isBot);
+  if (!botAlready) {
+    const fakeId = `bot-${ALLOWED_BOT}`;
+    r.members.set(fakeId, {
+      ws: null,
+      nick: ALLOWED_BOT,
+      norm: ALLOWED_BOT,
+      isAdmin: true,
+      isSpeaker: false,
+      isBot: true,
+    });
+    console.log(`[AUTO] Seslichat bot added to room for first joiner.`);
   }
 }
-
 
 
       send(ws, 'joined', {
@@ -695,4 +532,11 @@ if (room === SINGLE_ROOM) {
 server.listen(PORT, () =>
   console.log(`✅ Voice signaling server listening on port ${PORT}`)
 );
+
+
+
+
+
+
+
 

@@ -386,12 +386,23 @@ wss.on('connection', ws => {
       // GÜNCELLENDİ: YETKİ KONTROLÜ
       // Sadece 'roomA' (#sesli lobisi) ise Admin veya Davetli şartı ara.
       // Diğer odalar (Okey masaları) herkese açıktır.
+      // YETKİ VE KAPASİTE KONTROLÜ
       const isLobbyRoom = (roomName === 'roomA');
+      const isPrivateRoom = roomName.startsWith('private_');
 
+      // 1. Lobi Yetki Kontrolü
       if (isLobbyRoom && !isAdmin && !isInvited) {
-        console.log(`[JOIN REJECT] ${nickRaw} -> Not Admin or Invited for Lobby`);
         send(ws, 'error', { error: 'not-authorized-to-join' });
         return;
+      }
+
+      // 2. Özel Oda Kapasite Kontrolü (Max 2 Kişi)
+      // Eğer oda özel bir odaysa ve içeride zaten 2 veya daha fazla kişi varsa,
+      // ve giren kişi zaten içeridekilerden biri değilse (örn. reconnect değilse) reddet.
+      if (isPrivateRoom && room.members.size >= 2 && !room.members.has(clientId)) {
+         console.log(`[JOIN REJECT] ${nickRaw} -> Private room ${roomName} is full.`);
+         send(ws, 'error', { error: 'room-full' }); // Flutter'da "Oda Dolu/Meşgul" uyarısı gösterilebilir
+         return;
       }
 
       const isSpeaker = true; // <--- BU SATIRI VE ÜSTÜNDEKİLERİ BUL
@@ -532,6 +543,7 @@ if (realCount === 1) {
 server.listen(PORT, () =>
   console.log(`✅ Voice signaling server listening on port ${PORT}`)
 );
+
 
 
 

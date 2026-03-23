@@ -481,11 +481,15 @@ if (realCount === 1) {
         // Kullanıcıyı 'passive' moda çek (Socket kopmaz ama odadan çıkar)
         meta.room = null;
         meta.mode = 'passive';
-        state.clients.set(clientId, meta);
+        
+        // ✅ ÇÖZÜM: 'ws' referansını kaybetmemek için objeye ekleyerek kaydediyoruz.
+        state.clients.set(clientId, { ws, ...meta }); 
+        
         console.log(`[LEAVE] ${meta.nick} left the room.`);
       }
       return;
     }
+    // -----------------------------------
     // -----------------------------------
 
     if (t === 'signal') {

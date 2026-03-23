@@ -386,7 +386,11 @@ wss.on('connection', ws => {
       // GÜNCELLENDİ: YETKİ KONTROLÜ
       // Sadece 'roomA' (#sesli lobisi) ise Admin veya Davetli şartı ara.
       // Diğer odalar (Okey masaları) herkese açıktır.
-      const isLobbyRoom = (roomName === 'roomA');
+      // 🔒 Yalnızca admin veya davetliler katılabilir
+      // GÜNCELLENDİ: YETKİ KONTROLÜ
+      // Sadece 'roomA' (#sesli lobisi) ise Admin veya Davetli şartı ara.
+      // Diğer odalar (Okey masaları) herkese açıktır.
+      const isLobbyRoom = (room === 'roomA');
 
       if (isLobbyRoom && !isAdmin && !isInvited) {
         console.log(`[JOIN REJECT] ${nickRaw} -> Not Admin or Invited for Lobby`);

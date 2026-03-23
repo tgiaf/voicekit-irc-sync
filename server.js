@@ -471,29 +471,18 @@ if (realCount === 1) {
       return;
     }
 
-   // --- YENİ: ODADAN AYRILMA (LEAVE) (BUG FİX) ---
+   // --- YENİ: ODADAN AYRILMA (LEAVE) ---
     if (t === 'leave') {
       if (state.rooms[room] && state.rooms[room].members.has(clientId)) {
         state.rooms[room].members.delete(clientId);
         // Herkese bildir
         broadcastRoom(room, { type: 'peer-leave', nick: meta.nick, clientId });
         
-        // 🚀 DÜZELTME: Kullanıcıyı 'passive' moda çekerken 'ws' adresini EZME!
-        const clientObj = state.clients.get(clientId);
-        if (clientObj) {
-            clientObj.room = null;
-            clientObj.mode = 'passive';
-            // Nesneyi WebSocket adresi (ws) kaybolmayacak şekilde geri kaydet
-            state.clients.set(clientId, clientObj);
-        }
-        
-        // Lokal meta nesnesini de güncelle
-        if (meta) {
-            meta.room = null;
-            meta.mode = 'passive';
-        }
-        
-        console.log(`[LEAVE] ${meta ? meta.nick : 'Bilinmeyen'} left the room.`);
+        // Kullanıcıyı 'passive' moda çek (Socket kopmaz ama odadan çıkar)
+        meta.room = null;
+        meta.mode = 'passive';
+        state.clients.set(clientId, meta);
+        console.log(`[LEAVE] ${meta.nick} left the room.`);
       }
       return;
     }
